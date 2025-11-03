@@ -293,7 +293,7 @@ def detect_data(file_path: str = "./data") -> dict:
 
     return result
 
-def inert_data(document):
+def insert_data(document):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
