@@ -1,4 +1,5 @@
 import sqlite3
+import logging
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import streamlit as st
@@ -10,15 +11,29 @@ import pandas as pd
 import random
 
 
-def get_db_connection(db_path: str = "./database/sqlite_database.db") -> Optional[sqlite3.Connection]:
+def get_db_connection() -> Optional[sqlite3.Connection]:
     """获取数据库连接（连接到现有SQLite数据库）"""
     try:
-        if not Path(db_path).exists():
+        # 优先使用环境变量中的数据目录，如果没有则使用默认路径
+        if os.environ.get("DOCUMANAGER_DATA_DIR"):
+            base_dir = Path(os.environ["DOCUMANAGER_DATA_DIR"])
+        else:
+            # 在用户Documents文件夹中创建数据目录，更可靠
+            base_dir = Path(os.path.expanduser("~/Documents/DocuManager"))
+        
+        # 数据库文件路径
+        db_path = base_dir / "sqlite_database.db"
+        
+        # 如果数据库文件不存在，返回None
+        if not db_path.exists():
+            logging.warning(f"数据库文件不存在: {db_path}")
             return None
+        
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row  # 支持按字段名访问
         return conn
     except sqlite3.Error as e:
+        logging.error(f"数据库连接失败: {str(e)}")
         return None
 
 def get_db_statistics():
@@ -28,6 +43,8 @@ def get_db_statistics():
         "document_count": 0,
     }
     try:
+        if conn is None:
+            raise RuntimeError("无法连接到数据库")
         cursor = conn.cursor()
 
         try:
@@ -73,6 +90,10 @@ def get_table_fields(table_name: str = "document") -> dict:
 
     try:
         conn = get_db_connection()
+        if conn is None:
+            result["status"] = "error"
+            result["error_msg"] = "无法连接到数据库"
+            return result
         cursor = conn.cursor()
 
         # PRAGMA table_info(表名) 返回字段详情：(序号, 字段名, 类型, ...)
@@ -281,6 +302,7 @@ def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
         "error_msg": ""
     }
     
+    conn = None  # 确保conn总是被初始化
     try:
         conn = get_db_connection()
         if conn is None:

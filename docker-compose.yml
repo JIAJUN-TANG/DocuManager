@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  documanager:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - documanager_data:/app/data
+    environment:
+      - DOCUMANAGER_DATA_DIR=/app/data
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+volumes:
+  documanager_data:
