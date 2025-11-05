@@ -10,6 +10,7 @@ with st.spinner("正在初始化中...", show_time=True):
 pg = st.navigation([
     st.Page("pages/homepage.py", title="主页"),
     st.Page("pages/insert.py", title="数据录入"),
+    st.Page("pages/preview.py", title="档案浏览"),
 ])
 
 pg.run()

@@ -1,4 +1,8 @@
 /database
+/build
+/dist
 /data
 /__pycache__
+*.spec
 *.docx
+._*

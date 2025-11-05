@@ -1,19 +1,13 @@
 import sqlite3
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 import streamlit as st
 import os
 from docx import Document
 from datetime import datetime
 from difflib import SequenceMatcher
-import logging
-
-# 配置日志记录
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+import pandas as pd
+import random
 
 
 def get_db_connection(db_path: str = "./database/sqlite_database.db") -> Optional[sqlite3.Connection]:
@@ -27,7 +21,6 @@ def get_db_connection(db_path: str = "./database/sqlite_database.db") -> Optiona
     except sqlite3.Error as e:
         return None
 
-@st.cache_data
 def get_db_statistics():
     conn = get_db_connection()
     
@@ -290,6 +283,8 @@ def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
     
     try:
         conn = get_db_connection()
+        if conn is None:
+            raise RuntimeError("数据库连接失败，无法获取游标")
         cursor = conn.cursor()
         
         for match in matched_files:
@@ -299,7 +294,7 @@ def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
                 
                 # 获取文档信息
                 file_name = doc["name"]
-                # 尝试从name中解析作者、日期和文档名
+                # 从name中解析作者、日期和文档名
                 try:
                     author_name, publishdate, document_name = doc["name"].split("-")
                 except ValueError:
@@ -310,13 +305,10 @@ def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
                 # 获取文件内容
                 content = ""
                 if os.path.exists(doc["absolute_path"]) and doc["absolute_path"].endswith(('.docx', '.doc')):
-                    try:
-                        doc_obj = Document(doc["absolute_path"])
-                        content = '\n'.join([para.text.strip() for para in doc_obj.paragraphs if para.text.strip()])
-                    except:
-                        pass
+                    doc_obj = Document(doc["absolute_path"])
+                    content = '\n'.join([para.text.strip() for para in doc_obj.paragraphs if para.text.strip()])
                 
-                create_time = datetime.now()
+                create_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 # 插入数据，包含图片路径信息
                 cursor.execute(
@@ -329,7 +321,6 @@ def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
 
             except Exception as e:
                 result["failed_count"] += 1
-                logging.error(f"插入文档 {file_name} 失败：{str(e)}")
         
         conn.commit()
         conn.close()
@@ -338,6 +329,96 @@ def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
         result["status"] = "error"
         result["error_msg"] = f"批量插入失败：{str(e)}"
     finally:
-        conn.close()
+        if conn:
+            conn.close()
     
     return result
+
+def search_records(filters: Dict[str, Any]) -> pd.DataFrame:
+    conn = get_db_connection()
+    if conn is None:
+        return pd.DataFrame()
+    
+    try:
+        # 构建基础查询
+        query = "SELECT * FROM document WHERE 1=1"
+        params = []
+        
+        # 添加过滤条件
+        if filters.get('filename'):
+            query += " AND filename LIKE ?"
+            params.append(f"%{filters['filename']}%")
+        
+        if filters.get('mediafilename'):
+            query += " AND mediafilename LIKE ?"
+            params.append(f"%{filters['mediafilename']}%")
+        
+        if filters.get('documentname'):
+            query += " AND documentname LIKE ?"
+            params.append(f"%{filters['documentname']}%")
+        
+        if filters.get('authorname'):
+            query += " AND authorname LIKE ?"
+            params.append(f"%{filters['authorname']}%")
+        
+        # 日期范围筛选（新增）
+        if filters.get('start_date') and filters.get('end_date'):
+            query += " AND publishdate BETWEEN ? AND ?"
+            params.extend([filters['start_date'], filters['end_date']])
+        elif filters.get('start_date'):
+            query += " AND publishdate >= ?"
+            params.append(filters['start_date'])
+        elif filters.get('end_date'):
+            query += " AND publishdate <= ?"
+            params.append(filters['end_date'])
+        
+        # 执行查询
+        df = pd.read_sql_query(query, conn, params=params)
+        # 转换日期格式为字符串（避免Streamlit显示异常）
+        if 'publishdate' in df.columns:
+            df['publishdate'] = pd.to_datetime(df['publishdate'], errors='coerce').dt.strftime('%Y-%m-%d')
+        if 'created_at' in df.columns:
+            df['created_at'] = pd.to_datetime(df['created_at'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df
+    except Exception as e:
+        st.error(f"查询失败：{str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+# 获取随机一条记录
+def get_random_record() -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    if conn is None:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        # 先获取记录总数
+        cursor.execute("SELECT COUNT(*) FROM document")
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            st.info("数据库中暂无记录")
+            return None
+        
+        # 随机选择一条记录
+        random_offset = random.randint(0, count - 1)
+        cursor.execute("SELECT * FROM document LIMIT 1 OFFSET ?", (random_offset,))
+        record = cursor.fetchone()
+        # 转换为字典并格式化日期
+        record_dict = {k: record[k] for k in record.keys()}
+        if 'publishdate' in record_dict:
+            record_dict['publishdate'] = pd.to_datetime(record_dict['publishdate'], errors='coerce').strftime('%Y-%m-%d')
+        if 'created_at' in record_dict:
+            record_dict['created_at'] = pd.to_datetime(record_dict['created_at'], errors='coerce').strftime('%Y-%m-%d %H:%M:%S')
+        return record_dict
+    except Exception as e:
+        st.error(f"获取随机记录失败：{str(e)}")
+        return None
+
+# 分页处理函数（新增）
+def get_paginated_data(df: pd.DataFrame, page: int, page_size: int) -> pd.DataFrame:
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    return df.iloc[start_idx:end_idx].copy()

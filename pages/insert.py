@@ -4,10 +4,10 @@ import pandas as pd
 
 
 st.title("数据录入")
-
 st.divider()
 
-st.subheader("文档与图片文件匹配")
+if "matched_files" not in st.session_state:
+    st.session_state.matched_files = None
 
 # 添加匹配参数设置
 col1, col2 = st.columns([1, 1])
@@ -30,6 +30,8 @@ if match_button:
     
     if match_result["status"] == "success":
         matched_files = match_result["matched_files"]
+        st.session_state.matched_files = matched_files
+
         unmatched_docs = match_result["unmatched_docs"]
         unmatched_images = match_result["unmatched_images"]
         
@@ -67,31 +69,13 @@ if match_button:
             # 配置显示列
             column_config = {
                 "文档文件名": st.column_config.TextColumn("文档文件名", width="medium"),
-                "媒体文件名": st.column_config.TextColumn("媒体文件名", width="medium"),
+                "图片文件名": st.column_config.TextColumn("图片文件名", width="medium"),
                 "匹配类型": st.column_config.TextColumn("匹配类型", width="small"),
                 "相似度": st.column_config.TextColumn("相似度", width="small"),
             }
             
             # 显示数据
             st.dataframe(df, column_config=column_config, hide_index=True)
-            # st.write(matched_files)
-
-            # 添加保存按钮
-            save_button = st.button("写入数据库", key="save_button", type="secondary")
-            
-            if save_button:
-                with st.spinner("正在写入数据库...", show_time=True):
-                    # 调用批量插入函数
-                    insert_result = batch_insert_matched_files(matched_files)
-                
-                if insert_result["status"] == "success":
-                    st.success(
-                        f"数据库写入成功！\n"""
-                        f"- 成功写入：**{insert_result['inserted_count']}** 条记录\n"""
-                        f"- 写入失败：**{insert_result['failed_count']}** 条记录"
-                    )
-                else:
-                    st.error(f"数据库写入失败：{insert_result['error_msg']}")
         
         # 显示未匹配的文件
         if unmatched_docs or unmatched_images:
@@ -116,3 +100,15 @@ if match_button:
                     st.info("所有媒体都已匹配")
     else:
         st.error(f"文件匹配失败：{match_result['error_msg']}")
+
+if st.session_state.matched_files is not None:  # 只有存在匹配结果时才显示保存按钮
+    save_button = st.button("写入数据库", key="save_button", type="secondary")
+    if save_button:
+        with st.spinner("正在写入数据库...", show_time=True):
+            # 从会话状态中获取匹配结果
+            insert_result = batch_insert_matched_files(st.session_state.matched_files)
+        
+        if insert_result["status"] == "success":
+            st.success(f"数据库写入成功！...")
+        else:
+            st.error(f"数据库写入失败：{insert_result['error_msg']}")
