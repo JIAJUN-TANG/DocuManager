@@ -1,13 +1,19 @@
 import sqlite3
-from typing import Optional
+from typing import Optional, List, Dict
 from pathlib import Path
 import streamlit as st
 import os
-import time
-import pandas as pd
-import io
 from docx import Document
 from datetime import datetime
+from difflib import SequenceMatcher
+import logging
+
+# 配置日志记录
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 def get_db_connection(db_path: str = "./database/sqlite_database.db") -> Optional[sqlite3.Connection]:
@@ -48,74 +54,6 @@ def get_db_statistics():
             conn.close()
     
     return result
-
-@st.cache_data
-def analyse_toc(file, spliter) -> list:
-    """
-    解析上传的目录文件（txt/docx/xlsx/xls），返回结构化目录列表
-    
-    参数：
-        file: streamlit 上传的文件对象
-        
-    返回：
-        list: 解析后的目录记录列表（每个元素为一条目录文本，已过滤空行）
-        若格式不支持或解析失败，返回空列表并在页面显示错误提示
-    """
-    if not file:
-        return []
-
-    file_ext = file.name.split(".")[-1].lower()
-    toc_records = []
-
-    try:
-        if file_ext == "txt":
-            # 读取文件内容（按 utf-8 编码，兼容中文）
-            content = file.getvalue().decode("utf-8")
-            toc_records = [
-                line.strip() 
-                for line in content.splitlines() 
-                if line.strip()  # 跳过空行或仅含空格的行
-            ]
-
-        elif file_ext == "docx":
-            # 读取 docx 文件
-            doc = Document(file)
-            toc_records = []
-            for para in doc.paragraphs:
-                para_text = para.text.strip()
-                if not para_text:
-                    continue
-                parts = [p.strip() for p in para_text.split(spliter) if p.strip()]
-                if not parts:
-                    continue
-                last_part = parts[-1]
-                cleaned_last = last_part.rstrip("。").strip()
-                parts[-1] = cleaned_last
-                toc_records.append(parts)
-
-        elif file_ext in ["xlsx", "xls"]:
-            excel_data = pd.ExcelFile(io.BytesIO(file.getvalue()))
-            for sheet_name in excel_data.sheet_names:
-                # 读取当前 sheet 数据（跳过空行）
-                df = pd.read_excel(excel_data, sheet_name=sheet_name)
-                # 遍历每行，将多列内容用 " | " 连接成一条记录（过滤全空行）
-                for _, row in df.iterrows():
-                    # 过滤空值，将非空单元格内容转为字符串并连接
-                    row_values = [str(val).strip().split(spliter) for val in row.values if pd.notna(val) and str(val).strip()]
-                    if row_values:  # 跳过全空行
-                        toc_records.append(" | ".join(row_values))
-
-        else:
-            st.error(f"不支持的文件格式：{file_ext}，请上传 txt、docx、xlsx 或 xls 格式")
-            return []
-
-        if not toc_records:
-            st.info("文件中未检测到有效目录记录")
-        return toc_records
-
-    except Exception as e:
-        st.error(f"文件解析失败：{str(e)}）")
-        return []
 
 @st.cache_data
 def get_table_fields(table_name: str = "document") -> dict:
@@ -169,140 +107,237 @@ def get_table_fields(table_name: str = "document") -> dict:
 
     return result
 
-def format_file_size(size_bytes):
-    """辅助函数：将字节数转换为易读的单位（KB/MB/GB）"""
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 ** 2:
-        return f"{size_bytes / 1024:.2f} KB"
-    elif size_bytes < 1024 ** 3:
-        return f"{size_bytes / (1024 ** 2):.2f} MB"
-    else:
-        return f"{size_bytes / (1024 ** 3):.2f} GB"
-    
-@st.cache_data
-def detect_data(file_path: str = "./data") -> dict:
+def match_files_by_name(doc_folder: str = "./data/documents", img_folder: str = "./data/images") -> Dict:
     """
-    检测指定文件夹下的所有子文件夹和文件，按“文档/媒体”分类返回结构化结果
+    对比documents和images文件夹内的文件名称，首先进行完全匹配
     
     参数：
-        file_path: 待检测的文件夹路径（默认：./data）
-        
+        doc_folder: documents文件夹路径
+        img_folder: images文件夹路径
+    
     返回：
-        dict: 包含检测结果的字典，格式如下：
+        dict: 包含匹配结果的字典
             {
-                "status": "success" 或 "error",  # 检测状态
-                "default_path_used": bool,       # 是否使用了默认路径（./data）
-                "target_path": str,              # 实际检测的绝对路径
-                "overview": {                    # 总览信息
-                    "total_folders": int,       # 子文件夹总数（含嵌套）
-                    "total_files": int,         # 所有非隐藏文件总数
-                    "total_documents": int,     # 文档文件总数
-                    "total_media": int          # 媒体文件总数
-                },
-                "folders": list[str],            # 所有子文件夹的绝对路径列表
-                "document_files": list[dict],    # 文档文件详情列表（doc/pdf/txt等）
-                "media_files": list[dict],       # 媒体文件详情列表（jpg/tif/png等）
-                "error_msg": str                 # 错误信息（仅 status 为 error 时存在）
+                "status": "success" 或 "error",
+                "matched_files": 完全匹配的文件对列表,
+                "unmatched_docs": 未匹配的文档文件列表,
+                "unmatched_images": 未匹配的图片文件列表,
+                "error_msg": 错误信息（仅status为error时存在）
             }
     """
-    DOC_EXTENSIONS = {"doc", "docx", "pdf", "txt", "xlsx", "xls", "ppt", "pptx", "wps", "md"}
-    MEDIA_EXTENSIONS = {"jpg", "jpeg", "png", "tif", "tiff", "gif", "bmp", "svg", "mp4", "avi"}
-
-    default_path_used = False
-    if file_path is None or not file_path.strip():
-        file_path = "./data"
-        default_path_used = True
-    
-    # 路径规范化
-    target_path = os.path.abspath(file_path)
-    
-    # 初始化结果字典
     result = {
         "status": "success",
-        "default_path_used": default_path_used,
-        "target_path": target_path,
-        "overview": {
-            "total_folders": 0,
-            "total_files": 0,
-            "total_documents": 0,
-            "total_media": 0
-        },
-        "folders": [],
-        "document_files": [],
-        "media_files": []
+        "matched_files": [],
+        "unmatched_docs": [],
+        "unmatched_images": []
     }
-
+    
     try:
-        for root, dirs, files in os.walk(target_path):
-            # 收集子文件夹（过滤隐藏文件夹）
-            for dir_name in dirs:
-                if not dir_name.startswith("."):  # 排除以"."开头的隐藏文件夹
-                    folder_abs_path = os.path.join(root, dir_name)
-                    result["folders"].append(folder_abs_path)
-                    result["overview"]["total_folders"] += 1
-            
-            # 收集文件：按“文档/媒体”分类
-            for file_name in files:
-                if file_name.startswith("."):
-                    continue
-                
-                # 构造文件基础信息
-                file_abs_path = os.path.join(root, file_name)
-                file_size = os.path.getsize(file_abs_path)
-                modify_time = os.path.getmtime(file_abs_path)
-                modify_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(modify_time))
-                
-                if "." in file_name:
-                    file_main = file_name.rsplit(".", 1)[0]
-                    file_ext = file_name.rsplit(".", 1)[1].lower()
-                else:
-                    file_main = file_name  # 无后缀的文件
-                    file_ext = ""
-            
-                # 构造文件详情字典（保留原字段结构）
-                file_info = {
-                    "filename": file_name,          # 完整文件名
-                    "name": file_main,              # 文件名主体
-                    "type": file_ext,               # 文件后缀
-                    "absolute_path": file_abs_path, # 文件绝对路径
-                    "size": format_file_size(file_size),  # 易读大小
-                    "size_bytes": file_size,        # 原始字节数
-                    "last_modified": modify_time_str # 最后修改时间
-                }
-
-                # 按后缀分类添加到对应列表
-                if file_ext in DOC_EXTENSIONS:
-                    result["document_files"].append(file_info)
-                    result["overview"]["total_documents"] += 1
-                elif file_ext in MEDIA_EXTENSIONS:
-                    result["media_files"].append(file_info)
-                    result["overview"]["total_media"] += 1
-                
-                result["overview"]["total_files"] += 1
-
-    except FileNotFoundError:
-        result["status"] = "error"
-        result["error_msg"] = f"路径不存在：{target_path}"
-    except PermissionError:
-        result["status"] = "error"
-        result["error_msg"] = f"无权限访问路径：{target_path}"
+        # 获取文档文件列表
+        doc_files = []
+        if os.path.exists(doc_folder) and os.path.isdir(doc_folder):
+            for file in os.listdir(doc_folder):
+                if os.path.isfile(os.path.join(doc_folder, file)) and not file.startswith('.'):
+                    # 获取文件名主体（不含扩展名）
+                    file_main = file.rsplit('.', 1)[0] if '.' in file else file
+                    doc_files.append({
+                        "filename": file,
+                        "name": file_main,
+                        "absolute_path": os.path.abspath(os.path.join(doc_folder, file))
+                    })
+        
+        # 获取图片文件列表
+        img_files = []
+        if os.path.exists(img_folder) and os.path.isdir(img_folder):
+            for file in os.listdir(img_folder):
+                if os.path.isfile(os.path.join(img_folder, file)) and not file.startswith('.'):
+                    # 获取文件名主体（不含扩展名）
+                    file_main = file.rsplit('.', 1)[0] if '.' in file else file
+                    img_files.append({
+                        "filename": file,
+                        "name": file_main,
+                        "absolute_path": os.path.abspath(os.path.join(img_folder, file))
+                    })
+        
+        # 建立图片文件名到文件信息的映射
+        img_name_map = {img["name"]: img for img in img_files}
+        
+        # 进行完全匹配
+        matched_doc_names = set()
+        matched_img_names = set()
+        
+        for doc in doc_files:
+            if doc["name"] in img_name_map:
+                # 找到完全匹配的图片
+                img = img_name_map[doc["name"]]
+                result["matched_files"].append({
+                    "document": doc,
+                    "image": img,
+                    "match_type": "exact"
+                })
+                matched_doc_names.add(doc["name"])
+                matched_img_names.add(doc["name"])
+            else:
+                # 未匹配的文档
+                result["unmatched_docs"].append(doc)
+        
+        # 找出未匹配的图片
+        for img in img_files:
+            if img["name"] not in matched_img_names:
+                result["unmatched_images"].append(img)
+        
     except Exception as e:
         result["status"] = "error"
-        result["error_msg"] = f"检测失败：{str(e)}"
-
+        result["error_msg"] = f"文件匹配失败：{str(e)}"
+    
     return result
 
-def insert_data(document):
+def match_files_with_similarity(doc_folder: str = "./data/documents", img_folder: str = "./data/images", threshold: float = 0.9) -> Dict:
+    """
+    对比documents和images文件夹内的文件名称，先完全匹配，再使用相似度匹配
+    
+    参数：
+        doc_folder: documents文件夹路径
+        img_folder: images文件夹路径
+        threshold: 相似度匹配阈值
+    
+    返回：
+        dict: 包含所有匹配结果的字典
+    """
+    # 首先进行完全匹配
+    exact_match_result = match_files_by_name(doc_folder, img_folder)
+    
+    if exact_match_result["status"] == "error":
+        return exact_match_result
+    
+    # 获取未匹配的文档和图片
+    unmatched_docs = exact_match_result["unmatched_docs"]
+    unmatched_images = exact_match_result["unmatched_images"]
+    
+    # 相似度匹配
+    similarity_matches = []
+    matched_img_indices = set()
+    
+    for doc_idx, doc in enumerate(unmatched_docs):
+        best_match = None
+        best_similarity = 0
+        best_img_idx = -1
+        
+        for img_idx, img in enumerate(unmatched_images):
+            if img_idx in matched_img_indices:
+                continue
+                
+            # 计算文件名相似度
+            similarity = SequenceMatcher(None, doc["name"], img["name"]).ratio()
+            
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = img
+                best_img_idx = img_idx
+        
+        # 如果找到相似度高于阈值的匹配
+        if best_match and best_similarity >= threshold:
+            similarity_matches.append({
+                "document": doc,
+                "image": best_match,
+                "match_type": "similarity",
+                "similarity": best_similarity
+            })
+            matched_img_indices.add(best_img_idx)
+    
+    # 更新结果
+    result = exact_match_result.copy()
+    result["matched_files"].extend(similarity_matches)
+    
+    # 更新未匹配的文档和图片
+    remaining_docs = []
+    for doc_idx, doc in enumerate(unmatched_docs):
+        # 检查该文档是否通过相似度匹配到了图片
+        matched = False
+        for match in similarity_matches:
+            if match["document"]["absolute_path"] == doc["absolute_path"]:
+                matched = True
+                break
+        if not matched:
+            remaining_docs.append(doc)
+    
+    remaining_images = []
+    for img_idx, img in enumerate(unmatched_images):
+        if img_idx not in matched_img_indices:
+            remaining_images.append(img)
+    
+    result["unmatched_docs"] = remaining_docs
+    result["unmatched_images"] = remaining_images
+    
+    return result
+
+def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
+    """
+    批量将匹配的文件对写入数据库
+    
+    参数：
+        matched_files: 匹配的文件对列表
+    
+    返回：
+        dict: 包含执行结果的字典
+    """
+    result = {
+        "status": "success",
+        "inserted_count": 0,
+        "failed_count": 0,
+        "error_msg": ""
+    }
+    
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        for match in matched_files:
+            try:
+                doc = match["document"]
+                img = match["image"]
+                
+                # 获取文档信息
+                file_name = doc["name"]
+                # 尝试从name中解析作者、日期和文档名
+                try:
+                    author_name, publishdate, document_name = doc["name"].split("-")
+                except ValueError:
+                    author_name = "未知"
+                    publishdate = ""
+                    document_name = doc["name"]
+                
+                # 获取文件内容
+                content = ""
+                if os.path.exists(doc["absolute_path"]) and doc["absolute_path"].endswith(('.docx', '.doc')):
+                    try:
+                        doc_obj = Document(doc["absolute_path"])
+                        content = '\n'.join([para.text.strip() for para in doc_obj.paragraphs if para.text.strip()])
+                    except:
+                        pass
+                
+                create_time = datetime.now()
+                
+                # 插入数据，包含图片路径信息
+                cursor.execute(
+                    "INSERT INTO document (filename, mediafilename, documentname, authorname, publishdate, created_at, content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (file_name, img["filename"], document_name, author_name, publishdate, create_time, content)
+                )
+                result["inserted_count"] += 1
+                
+                logging.info(f"成功插入文档：{file_name}")
 
-        file_name = document.get("filename", "")
-        author_name, publishdate, document_name = document.get("name", "").split("-")
-        doc = Document(document.get("abspath"), "")
-        for para in doc.paragraphs:
-            para_text = para.text.strip()
-        create_time = datetime.now()
-    except:
-        return None
+            except Exception as e:
+                result["failed_count"] += 1
+                logging.error(f"插入文档 {file_name} 失败：{str(e)}")
+        
+        conn.commit()
+        conn.close()
+        
+    except Exception as e:
+        result["status"] = "error"
+        result["error_msg"] = f"批量插入失败：{str(e)}"
+    finally:
+        conn.close()
+    
+    return result

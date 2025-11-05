@@ -18,6 +18,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS document (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filename TEXT UNIQUE NOT NULL,
+            mediafilename TEXT,
             documentname TEXT NOT NULL,
             authorname TEXT NOT NULL,
             journalname TEXT,
