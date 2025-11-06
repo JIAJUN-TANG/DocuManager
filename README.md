@@ -10,7 +10,8 @@
 在开始之前，请确保您的系统已安装以下软件：
 
 - [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose](https://docs.docker.com/compose/install/)（对于使用docker-compose的方法）
+- [Docker Compose](https://docs.docker.com/compose/install/)（推荐）
+- 支持IPv6协议的梯子
 
 #### 使用Docker Compose（推荐）
 
@@ -28,6 +29,12 @@ cd /您自己的路径/DocuManager
 
 ```bash
 docker-compose up -d
+```
+
+如果提示各种网络错误，可以尝试优先使用以下命令拉取Python镜像后再重复执行`docker-compose up -d`：
+
+```bash
+docker pull python:3.10-slim
 ```
 
 - `-d` 参数表示在后台运行容器
