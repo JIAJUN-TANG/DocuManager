@@ -1,6 +1,5 @@
 import streamlit as st
 from pathlib import Path
-import pandas as pd
 from utils.data_util import search_records, get_paginated_data, get_random_record
 
 
@@ -26,29 +25,13 @@ with st.form("search_form", clear_on_submit=False):
     # 核心筛选项：三列布局
     col1, col2, col3 = st.columns(3)
     with col1:
-        filename = st.text_input("文档文件名", value=st.session_state.filters.get('filename', ''), key="filename_filter")
+        documentname = st.text_input("文档名", value=st.session_state.filters.get('documentname', ''), key="documentname_filter")
     with col2:
-        mediafilename = st.text_input("媒体文件名", value=st.session_state.filters.get('mediafilename', ''), key="mediafilename_filter")
+        mediafilename = st.text_input("媒体名", value=st.session_state.filters.get('mediafilename', ''), key="mediafilename_filter")
     with col3:
-        documentname = st.text_input("文档名称", value=st.session_state.filters.get('documentname', ''), key="documentname_filter")
-    
-    # 非核心筛选项：折叠显示
-    with st.expander("更多筛选条件", expanded=False):
-        exp_col1, exp_col2 = st.columns(2)
-        with exp_col1:
-            authorname = st.text_input("作者", value=st.session_state.filters.get('authorname', ''), key="authorname_filter")
-        with exp_col2:
-            # 日期范围筛选
-            start_date = st.date_input(
-                "发布日期起始", 
-                value=pd.to_datetime(st.session_state.filters.get('start_date')) if st.session_state.filters.get('start_date') else None, 
-                key="start_date_filter"
-            )
-            end_date = st.date_input(
-                "发布日期结束", 
-                value=pd.to_datetime(st.session_state.filters.get('end_date')) if st.session_state.filters.get('end_date') else None, 
-                key="end_date_filter"
-            )
+        filename = st.text_input("文件名", value=st.session_state.filters.get('filename', ''), key="filename_filter")
+    with col1:
+        full_text = st.text_input("全文内容", value=st.session_state.filters.get('full_text', ''), key="full_text_filter")
     
     # 按钮组：检索 + 重置
     btn_col1, btn_col2 = st.columns([1, 5])
@@ -68,13 +51,14 @@ if reset_button:
 
 # 处理检索请求
 if search_button:
+    if not any([filename, mediafilename, documentname, full_text]):
+        st.warning("请输入检索条件")
+        st.stop()
     st.session_state.filters = {
         'filename': filename,
         'mediafilename': mediafilename,
         'documentname': documentname,
-        'authorname': authorname,
-        'start_date': start_date.strftime('%Y-%m-%d') if start_date else None,
-        'end_date': end_date.strftime('%Y-%m-%d') if end_date else None
+        'full_text': full_text,
     }
     
     with st.spinner("正在检索数据..."):
@@ -108,7 +92,7 @@ with tab1:
             # 循环生成Expander
             for idx, row in paginated_df.iterrows():
                 # Expander标题：显示关键信息
-                expander_title = f"📄 {row['documentname']} | 日期：{row.get('publishdate', '未知')}"
+                expander_title = f"📄 {row['documentname']} | {row.get('publishdate', '未知')}"
                 with st.expander(expander_title, expanded=False):
                     # 显示元数据
                     meta_fields = [
@@ -151,8 +135,8 @@ with tab2:
             st.write(f"📝 **文档名称**: {record.get('documentname')}")
         with col2:
             st.write(f"👤 **作者**: {record.get('authorname')}")
-            st.write(f"📅 **发布日期**: {record.get('publishdate')}")
-            st.write(f"🕒 **创建时间**: {record.get('created_at')}")
+            st.write(f"📅 **发布日期**: {record.get('publishdate') }")
+            st.write(f"🕒 **录入时间**: {record.get('created_at')}")
             
         if st.button("查看完整详情", key="view_random_detail"):
             st.session_state.show_details = True
@@ -187,12 +171,7 @@ if st.session_state.show_details and st.session_state.selected_record:
         st.markdown("### 文档内容预览")
         content = record.get('content', '')
         if content:
-            # 长内容折叠显示
-            if len(content) > 800:
-                with st.expander("查看完整内容", expanded=False):
-                    st.markdown(content)
-            else:
-                st.markdown(content)
+            st.markdown(content)
         else:
             st.info("无文档内容")
     

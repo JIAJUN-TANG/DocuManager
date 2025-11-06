@@ -18,8 +18,7 @@ def get_db_connection() -> Optional[sqlite3.Connection]:
         if os.environ.get("DOCUMANAGER_DATA_DIR"):
             base_dir = Path(os.environ["DOCUMANAGER_DATA_DIR"])
         else:
-            # 在用户Documents文件夹中创建数据目录，更可靠
-            base_dir = Path(os.path.expanduser("~/Documents/DocuManager"))
+            base_dir = Path("./database")
         
         # 数据库文件路径
         db_path = base_dir / "sqlite_database.db"
@@ -65,61 +64,6 @@ def get_db_statistics():
     
     return result
 
-@st.cache_data
-def get_table_fields(table_name: str = "document") -> dict:
-    """
-    获取指定数据库表的所有字段名称
-    
-    参数：
-        table_name: 目标表名（默认：document）
-        
-    返回：
-        dict: 包含字段信息的结果字典
-            {
-                "status": "success" 或 "error",  # 执行状态
-                "fields": list[str],              # 字段名称列表（成功时返回）
-                "error_msg": str                  # 错误信息（失败时返回）
-            }
-    """
-    conn = None
-    result = {
-        "status": "success",
-        "fields": [],
-        "error_msg": ""
-    }
-
-    try:
-        conn = get_db_connection()
-        if conn is None:
-            result["status"] = "error"
-            result["error_msg"] = "无法连接到数据库"
-            return result
-        cursor = conn.cursor()
-
-        # PRAGMA table_info(表名) 返回字段详情：(序号, 字段名, 类型, ...)
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        field_records = cursor.fetchall()  # 获取所有字段记录
-
-        if field_records:
-            # 若连接设置了 row_factory=sqlite3.Row，按字段名取值
-            if isinstance(field_records[0], sqlite3.Row):
-                result["fields"] = [record["name"] for record in field_records]
-            # 否则按元组索引取值（PRAGMA结果中第2个元素是字段名）
-            else:
-                result["fields"] = [record[1] for record in field_records]
-
-    except sqlite3.Error as e:
-        result["status"] = "error"
-        result["error_msg"] = f"数据库错误：{str(e)}（可能表名不存在或权限不足）"
-    except Exception as e:
-        result["status"] = "error"
-        result["error_msg"] = f"未知错误：{str(e)}"
-    finally:
-        # 5. 确保连接关闭，释放资源
-        if conn:
-            conn.close()
-
-    return result
 
 def match_files_by_name(doc_folder: str = "./data/documents", img_folder: str = "./data/images") -> Dict:
     """
@@ -356,6 +300,118 @@ def batch_insert_matched_files(matched_files: List[Dict]) -> Dict:
     
     return result
 
+def insert_single_file(doc_file, img_file, author_name=None, publishdate=None) -> Dict:
+    """
+    将单个匹配的文件对写入数据库并保存文件到本地目录
+    
+    参数：
+        doc_file: Streamlit上传的文件对象
+        img_file: Streamlit上传的文件对象
+        author_name: 作者名称（可选）
+        publishdate: 发布日期（可选）
+    
+    返回：
+        dict: 包含执行结果的字典
+    """
+    result = {
+        "status": "success",
+        "inserted_count": 0,
+        "error_msg": ""
+    }
+    
+    conn = None
+    doc_path = None
+    img_path = None
+    try:
+        # 获取文件名
+        doc_filename = doc_file.name
+        img_filename = img_file.name if img_file else None
+        doc_name = doc_filename.rsplit('.', 1)[0] if '.' in doc_filename else doc_filename
+        
+        # 创建数据目录
+        docs_dir = Path("./data/documents")
+        images_dir = Path("./data/images")
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 保存文件到指定目录
+        doc_path = docs_dir / doc_filename
+        
+        # 写入文档文件
+        with open(doc_path, "wb") as f:
+            f.write(doc_file.getvalue())
+        
+        # 写入图片文件
+        img_path = None
+        if img_file:
+            img_path = images_dir / img_filename
+            with open(img_path, "wb") as f:
+                f.write(img_file.getvalue())
+        
+        # 连接数据库
+        conn = get_db_connection()
+        if conn is None:
+            raise RuntimeError("数据库连接失败，无法获取游标")
+        cursor = conn.cursor()
+        
+        # 文档名称和信息解析
+        document_name = doc_name
+        
+        # 如果未提供作者信息，尝试从文件名解析
+        if author_name is None:
+            try:
+                if '-' in doc_name:
+                    parts = doc_name.split("-")
+                    if len(parts) >= 3:
+                        author_name = parts[0]
+                        publishdate = parts[1] if publishdate is None else publishdate
+                        document_name = "-".join(parts[2:])
+                    else:
+                        author_name = "未知"
+                else:
+                    author_name = "未知"
+            except:
+                author_name = "未知"
+        
+        # 读取文档内容（仅支持docx/doc）
+        content = ""
+        if doc_filename.endswith(('.docx', '.doc')):
+            try:
+                doc_obj = Document(doc_path)
+                content = '\n'.join([para.text.strip() for para in doc_obj.paragraphs if para.text.strip()])
+            except Exception as e:
+                logging.warning(f"读取文档内容失败：{str(e)}")
+                content = ""
+        
+        create_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 插入数据
+        cursor.execute(
+            "INSERT INTO document (filename, mediafilename, documentname, authorname, publishdate, created_at, content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (doc_filename, img_filename, document_name, author_name, publishdate, create_time, content)
+        )
+        result["inserted_count"] = 1
+        
+        conn.commit()
+        logging.info(f"成功插入单个文档：{doc_filename}，图片：{img_filename}")
+        
+    except Exception as e:
+        result["status"] = "error"
+        result["error_msg"] = f"单文件插入失败：{str(e)}"
+        # 发生错误时尝试删除已保存的文件
+        try:
+            if doc_path is not None and doc_path.exists():
+                doc_path.unlink()
+            if img_path is not None and img_path.exists():
+                img_path.unlink()
+        except:
+            pass
+    finally:
+        if conn:
+            conn.close()
+    
+    return result
+
 def search_records(filters: Dict[str, Any]) -> pd.DataFrame:
     conn = get_db_connection()
     if conn is None:
@@ -383,6 +439,10 @@ def search_records(filters: Dict[str, Any]) -> pd.DataFrame:
             query += " AND authorname LIKE ?"
             params.append(f"%{filters['authorname']}%")
         
+        if filters.get('full_text'):
+            query += " AND content LIKE ?"
+            params.append(f"%{filters['full_text']}%")
+        
         # 日期范围筛选（新增）
         if filters.get('start_date') and filters.get('end_date'):
             query += " AND publishdate BETWEEN ? AND ?"
@@ -396,7 +456,7 @@ def search_records(filters: Dict[str, Any]) -> pd.DataFrame:
         
         # 执行查询
         df = pd.read_sql_query(query, conn, params=params)
-        # 转换日期格式为字符串（避免Streamlit显示异常）
+        # 转换日期格式为字符串
         if 'publishdate' in df.columns:
             df['publishdate'] = pd.to_datetime(df['publishdate'], errors='coerce').dt.strftime('%Y-%m-%d')
         if 'created_at' in df.columns:
@@ -439,7 +499,7 @@ def get_random_record() -> Optional[Dict[str, Any]]:
         st.error(f"获取随机记录失败：{str(e)}")
         return None
 
-# 分页处理函数（新增）
+# 分页处理函数
 def get_paginated_data(df: pd.DataFrame, page: int, page_size: int) -> pd.DataFrame:
     start_idx = (page - 1) * page_size
     end_idx = start_idx + page_size
