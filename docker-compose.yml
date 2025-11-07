@@ -4,11 +4,9 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - documanager_data:/app/data
+      # 使用相对路径，相对于docker-compose.yml文件所在目录
+      - ./data:/app/data
     environment:
       - DOCUMANAGER_DATA_DIR=/app/data
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
-
-volumes:
-  documanager_data:

@@ -325,12 +325,16 @@ def insert_single_file(doc_file, img_file, author_name=None, publishdate=None) -
     try:
         # 获取文件名
         doc_filename = doc_file.name
-        img_filename = img_file.name if img_file else None
+        # 确保img_filename始终是字符串，即使img_file为空
+        img_filename = img_file.name if img_file else ""
         doc_name = doc_filename.rsplit('.', 1)[0] if '.' in doc_filename else doc_filename
         
+        # 从环境变量获取数据目录，如果没有则使用默认值
+        data_dir = os.environ.get('DOCUMANAGER_DATA_DIR', './data')
+        
         # 创建数据目录
-        docs_dir = Path("./data/documents")
-        images_dir = Path("./data/images")
+        docs_dir = Path(data_dir) / "documents"
+        images_dir = Path(data_dir) / "images"
         docs_dir.mkdir(parents=True, exist_ok=True)
         images_dir.mkdir(parents=True, exist_ok=True)
         
@@ -343,8 +347,9 @@ def insert_single_file(doc_file, img_file, author_name=None, publishdate=None) -
         
         # 写入图片文件
         img_path = None
-        if img_file:
-            img_path = images_dir / img_filename
+        if img_file and img_filename:
+            # 确保Path操作时img_filename是有效的字符串
+            img_path = images_dir / str(img_filename)
             with open(img_path, "wb") as f:
                 f.write(img_file.getvalue())
         

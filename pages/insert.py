@@ -58,11 +58,15 @@ with single_matching_tab:
 # 批文件匹配与导入
 with batch_matching_tab:
     # 添加匹配参数设置
+    # 从环境变量获取数据目录，如果没有则使用默认值
+    import os
+    default_data_dir = os.environ.get('DOCUMANAGER_DATA_DIR', './data')
+    
     col1, col2 = st.columns([1, 1])
     with col1:
-        doc_folder = st.text_input("文档文件夹路径", value="./data/documents", key="doc_folder")
+        doc_folder = st.text_input("文档文件夹路径", value=f"{default_data_dir}/documents", key="doc_folder")
     with col2:
-        img_folder = st.text_input("图片文件夹路径", value="./data/images", key="img_folder")
+        img_folder = st.text_input("图片文件夹路径", value=f"{default_data_dir}/images", key="img_folder")
 
     # 添加相似度阈值设置
     threshold = st.slider("相似度匹配阈值", min_value=0.7, max_value=1.0, value=0.9, step=0.01, key="threshold")
