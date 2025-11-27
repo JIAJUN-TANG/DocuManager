@@ -6,3 +6,4 @@
 *.spec
 *.docx
 ._*
+node_modules
